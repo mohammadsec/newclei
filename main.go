@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -29,8 +28,7 @@ func getPRs(token string) []int {
 			panic(err)
 		}
 
-		body := make([]byte, resp.ContentLength)
-		_, _ = resp.Body.Read(body)
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
 		if strings.TrimSpace(string(body)) == "[]" {
