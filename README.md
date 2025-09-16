@@ -7,7 +7,7 @@ https://github.com/projectdiscovery/nuclei-templates/pulls
 # Install
 
 ```zsh
-go install -v github.com/tr3ss/newclei@latest
+go install -v github.com/mohammadsec/newclei@latest
 ```
 
 # Usage
