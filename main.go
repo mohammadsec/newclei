@@ -3,23 +3,22 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
 )
 
-func getPRs(token string) []float64 {
-
-	// Get request
-	var result []float64
+func getPRs(token string) []int {
+	var result []int
 	page := 1
+
 	for {
-		ghprs := "https://api.github.com/repos/projectdiscovery/nuclei-templates/pulls?state=open&per_page=100&page=" + strconv.Itoa(page)
-		req, _ := http.NewRequest("GET", ghprs, nil)
-		req.Header.Set("Host", "api.github.com")
+		url := fmt.Sprintf("https://api.github.com/repos/projectdiscovery/nuclei-templates/pulls?state=open&per_page=100&page=%d", page)
+		req, _ := http.NewRequest("GET", url, nil)
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
@@ -29,30 +28,28 @@ func getPRs(token string) []float64 {
 		if err != nil {
 			panic(err)
 		}
-		defer resp.Body.Close()
 
-		body, _ := ioutil.ReadAll(resp.Body)
-		json := string(body[:])
-		if strings.TrimRight(json, "\n") == "[]" {
+		body := make([]byte, resp.ContentLength)
+		_, _ = resp.Body.Read(body)
+		resp.Body.Close()
+
+		if strings.TrimSpace(string(body)) == "[]" {
 			break
 		}
-		prs := gjson.Get(json, "#(title)#.number").Array()
+
+		prs := gjson.Get(string(body), "#.number").Array()
 		for _, v := range prs {
-			result = append(result, v.Num)
+			result = append(result, int(v.Num))
 		}
 		page++
 	}
+
 	return result
 }
 
-func getFiles(prs float64, token string, cves bool) gjson.Result {
-
-	// Get request
-	prstr := fmt.Sprintf("%v", prs)
-
-	ghfiles := "https://api.github.com/repos/projectdiscovery/nuclei-templates/pulls/" + prstr + "/files"
-	req, _ := http.NewRequest("GET", ghfiles, nil)
-	req.Header.Set("Host", "api.github.com")
+func getFiles(pr int, token string, cves bool) gjson.Result {
+	url := fmt.Sprintf("https://api.github.com/repos/projectdiscovery/nuclei-templates/pulls/%d/files", pr)
+	req, _ := http.NewRequest("GET", url, nil)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -64,32 +61,68 @@ func getFiles(prs float64, token string, cves bool) gjson.Result {
 	}
 	defer resp.Body.Close()
 
-	body, _ := ioutil.ReadAll(resp.Body)
-	json := string(body[:])
-	var files gjson.Result
+	body, _ := io.ReadAll(resp.Body)
+	json := string(body)
+
 	if cves {
-		files = gjson.Get(json, "#(filename%\"*cves*\")#.raw_url")
-	} else {
-		files = gjson.Get(json, "#(filename)#.raw_url")
+		return gjson.Get(json, "#(filename%\"*cves*.yaml\")#.raw_url")
 	}
-	return files
+	return gjson.Get(json, "#(filename%\"*.yaml\")#.raw_url")
+}
+
+func downloadFile(url string, folder string) {
+	tokens := strings.Split(url, "/")
+	filename := tokens[len(tokens)-1]
+	path := folder + "/" + filename
+
+	if _, err := os.Stat(path); err == nil {
+		fmt.Println("[SKIP]", filename, "already exists")
+		return
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Println("[ERROR] Failed to download:", filename)
+		return
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(path)
+	if err != nil {
+		fmt.Println("[ERROR] Cannot create file:", filename)
+		return
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		fmt.Println("[ERROR] Cannot save file:", filename)
+		return
+	}
+
+	fmt.Println("[DOWNLOADED]", filename)
 }
 
 func main() {
-
 	var token string
-	flag.StringVar(&token, "token", "", "- GitHub token to use.\n")
 	var cves bool
-	flag.BoolVar(&cves, "cves", false, "- Show only CVEs")
+	var folder string
+
+	flag.StringVar(&token, "token", "", "GitHub token to use")
+	flag.BoolVar(&cves, "cves", false, "Download only CVE templates")
+	flag.StringVar(&folder, "folder", "yaml_files", "Folder to save files")
 	flag.Parse()
 
+	// Create folder if not exists
+	if _, err := os.Stat(folder); os.IsNotExist(err) {
+		os.Mkdir(folder, 0755)
+	}
+
 	prs := getPRs(token)
-	var files gjson.Result
-	for i := range prs {
-		pr := prs[i]
-		files = getFiles(pr, token, cves)
-		for _, name := range files.Array() {
-			fmt.Println(name.String())
+	for _, pr := range prs {
+		files := getFiles(pr, token, cves)
+		for _, file := range files.Array() {
+			downloadFile(file.String(), folder)
 		}
 	}
 }
